@@ -1,6 +1,6 @@
 pybit==5.8.0
 pandas==2.1.4
 numpy==1.26.4
-pandas-ta @ git+https://github.com/twopirllc/pandas-ta.git@development
+ta==0.11.0
 aiohttp==3.9.5
 apscheduler==3.10.4
