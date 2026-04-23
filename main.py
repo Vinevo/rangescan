@@ -52,7 +52,9 @@ async def main():
     scheduler.start()
     logger.info("⏰ Планировщик: скан 5м | отчёт 09:00 UTC | retry 3м")
 
-    # Первый скан сразу при старте
+   # Задержка перед первым сканом — ждём пока контейнер полностью поднимется
+    logger.info("⏳ Ожидание 15 секунд перед первым сканом...")
+    await asyncio.sleep(15)
     logger.info("🔍 Первый скан...")
     await scan_market()
 
