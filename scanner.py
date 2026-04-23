@@ -4,7 +4,7 @@ import time
 import numpy as np
 from pybit.unified_trading import HTTP
 import pandas as pd
-import pandas_ta as ta
+import ta as ta_lib
 from notifier import send_signal, send_exit_alert, send_daily_report
 from state import load_state, save_state
 from funding import analyse_funding
@@ -13,6 +13,50 @@ from sr_cache import get_cached, set_cached, clear_stale
 from bot_commands import is_paused
 
 logger = logging.getLogger(__name__)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  ОБЁРТКИ ИНДИКАТОРОВ (замена pandas_ta → ta)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _adx(high: pd.Series, low: pd.Series, close: pd.Series, length: int = 14) -> pd.Series | None:
+    """Возвращает Series значений ADX."""
+    try:
+        indicator = ta_lib.trend.ADXIndicator(high, low, close, window=length)
+        return indicator.adx()
+    except Exception:
+        return None
+
+
+def _bbands(close: pd.Series, length: int = 20) -> pd.DataFrame | None:
+    """Возвращает DataFrame с колонками BBU, BBM, BBL."""
+    try:
+        bb = ta_lib.volatility.BollingerBands(close, window=length, window_dev=2)
+        df = pd.DataFrame()
+        df["BBU_20_2.0"] = bb.bollinger_hband()
+        df["BBM_20_2.0"] = bb.bollinger_mavg()
+        df["BBL_20_2.0"] = bb.bollinger_lband()
+        return df
+    except Exception:
+        return None
+
+
+def _atr(high: pd.Series, low: pd.Series, close: pd.Series, length: int = 14) -> pd.Series | None:
+    """Возвращает Series значений ATR."""
+    try:
+        return ta_lib.volatility.AverageTrueRange(
+            high, low, close, window=length
+        ).average_true_range()
+    except Exception:
+        return None
+
+
+def _rsi(close: pd.Series, length: int = 14) -> pd.Series | None:
+    """Возвращает Series значений RSI."""
+    try:
+        return ta_lib.momentum.RSIIndicator(close, window=length).rsi()
+    except Exception:
+        return None
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  НАСТРОЙКИ
@@ -312,18 +356,12 @@ def analyse_sr_context(levels: list[dict], price: float, range_low: float, range
 # ──────────────────────────────────────────────────────────────────────────────
 
 def check_rsi_flat(df: pd.DataFrame) -> tuple[bool, float]:
-    """
-    RSI застрял между RSI_FLAT_LOW и RSI_FLAT_HIGH последние RSI_FLAT_CANDLES свечей.
-    Возвращает (is_flat, rsi_current).
-    """
     try:
-        rsi_s = ta.rsi(df["close"], length=14)
-        if rsi_s is None or rsi_s.empty:
+        rsi_s = _rsi(df["close"], length=14)
+        if rsi_s is None or rsi_s.dropna().empty:
             return False, 50.0
-
         rsi_current = float(rsi_s.iloc[-1])
         recent_rsi  = rsi_s.iloc[-RSI_FLAT_CANDLES:]
-
         in_zone = all(RSI_FLAT_LOW <= v <= RSI_FLAT_HIGH for v in recent_rsi if not np.isnan(v))
         return in_zone, round(rsi_current, 1)
     except Exception:
@@ -342,13 +380,13 @@ def analyse_flat(df: pd.DataFrame, symbol: str = "", tf: str = "") -> dict | Non
         price = float(close.iloc[-1])
 
         # ── ADX ────────────────────────────────────────────────────────────────
-        adx_df = ta.adx(high, low, close, length=14)
-        if adx_df is None or adx_df.empty:
+        adx_s = _adx(high, low, close, length=14)
+        if adx_s is None or adx_s.dropna().empty:
             return None
-        adx_val = float(adx_df.iloc[-1, 0])
+        adx_val = float(adx_s.iloc[-1])
 
         # ── Bollinger Bands ────────────────────────────────────────────────────
-        bb_df = ta.bbands(close, length=20, std=2)
+        bb_df = _bbands(close, length=20)
         if bb_df is None or bb_df.empty:
             return None
         bb_upper = float(bb_df["BBU_20_2.0"].iloc[-1])
@@ -357,8 +395,8 @@ def analyse_flat(df: pd.DataFrame, symbol: str = "", tf: str = "") -> dict | Non
         bb_width = (bb_upper - bb_lower) / price
 
         # ── ATR ────────────────────────────────────────────────────────────────
-        atr_s = ta.atr(high, low, close, length=14)
-        if atr_s is None or atr_s.empty:
+        atr_s = _atr(high, low, close, length=14)
+        if atr_s is None or atr_s.dropna().empty:
             return None
         atr_val   = float(atr_s.iloc[-1])
         atr_ratio = atr_val / price
@@ -494,15 +532,11 @@ def analyse_flat(df: pd.DataFrame, symbol: str = "", tf: str = "") -> dict | Non
 
 def check_exit(df: pd.DataFrame, saved: dict) -> bool:
     try:
-        close = df["close"]
-        high  = df["high"]
-        low   = df["low"]
-        price = float(close.iloc[-1])
-
-        adx_df = ta.adx(high, low, close, length=14)
-        if adx_df is None:
+        price = float(df["close"].iloc[-1])
+        adx_s = _adx(df["high"], df["low"], df["close"], length=14)
+        if adx_s is None:
             return False
-        if float(adx_df.iloc[-1, 0]) > 25:
+        if float(adx_s.iloc[-1]) > 25:
             return True
         if price > saved["range_high"] * 1.01:
             return True
@@ -532,12 +566,12 @@ async def mtf_confirmed(symbol: str, junior_tf: str) -> bool:
     if senior == "W":
         df_w = get_klines(symbol, "W", limit=30)
         if df_w is None:
-            return True   # нет данных — не блокируем
+            return True
         try:
-            adx_df = ta.adx(df_w["high"], df_w["low"], df_w["close"], length=14)
-            if adx_df is None:
+            adx_s = _adx(df_w["high"], df_w["low"], df_w["close"], length=14)
+            if adx_s is None:
                 return True
-            weekly_adx = float(adx_df.iloc[-1, 0])
+            weekly_adx = float(adx_s.iloc[-1])
             if weekly_adx > WEEKLY_ADX_MAX:
                 logger.debug(f"Weekly ADX filter: {symbol} ADX={weekly_adx:.1f}")
                 return False
@@ -550,11 +584,10 @@ async def mtf_confirmed(symbol: str, junior_tf: str) -> bool:
     if df_s is None:
         return False
     try:
-        adx_df = ta.adx(df_s["high"], df_s["low"], df_s["close"], length=14)
-        if adx_df is None:
+        adx_s = _adx(df_s["high"], df_s["low"], df_s["close"], length=14)
+        if adx_s is None:
             return False
-        senior_adx = float(adx_df.iloc[-1, 0])
-        return senior_adx < 25
+        return float(adx_s.iloc[-1]) < 25
     except Exception:
         return False
 
