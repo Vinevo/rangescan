@@ -1,0 +1,5 @@
+pybit==5.8.0
+pandas==2.2.2
+pandas-ta==0.3.14b0
+aiohttp==3.9.5
+apscheduler==3.10.4
