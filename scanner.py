@@ -108,7 +108,7 @@ GRID_MIN_COUNT    = 5       # Мин. сеток
 
 # ══════════════════════════════════════════════════════════════════════════════
 
-session = HTTP(testnet=False, domain="bytick")
+session = HTTP(testnet=False)
 
 # Загружаем с диска — переживает рестарты
 active_flats, last_alerts = load_state()
