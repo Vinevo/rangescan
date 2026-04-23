@@ -108,7 +108,7 @@ GRID_MIN_COUNT    = 5       # Мин. сеток
 
 # ══════════════════════════════════════════════════════════════════════════════
 
-session = HTTP(testnet=False)
+session = HTTP(testnet=False, base_url="https://api.bytick.com")
 
 # Загружаем с диска — переживает рестарты
 active_flats, last_alerts = load_state()
