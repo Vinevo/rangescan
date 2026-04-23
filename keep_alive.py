@@ -8,15 +8,20 @@ logger = logging.getLogger(__name__)
 class PingHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
         self.end_headers()
         self.wfile.write(b"OK - Bybit Scanner is alive")
 
+    def do_HEAD(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.end_headers()
+
     def log_message(self, format, *args):
-        pass  # Отключаем логи HTTP запросов
+        pass
 
 
 def keep_alive():
-    """Запускаем HTTP сервер в отдельном потоке."""
     port = 8080
     server = HTTPServer(("0.0.0.0", port), PingHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
