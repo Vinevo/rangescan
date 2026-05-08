@@ -19,7 +19,7 @@ from state import load_state, save_state
 from funding import analyse_funding
 from profit import calc_profit, format_profit_block
 from sr_cache import get_cached, set_cached, clear_stale
-from bot_commands import is_paused
+from bot_commands import is_paused, record_signal, record_exit, record_breakout
 from smart_analysis import full_smart_analysis
 
 logger = logging.getLogger(__name__)
@@ -544,12 +544,14 @@ async def scan_market():
         for symbol, tf, old, dur, direction, bp in exits:
             total_exits += 1
             daily_stats["exits"] += 1
+            record_exit()
             logger.info(f"⚠️ Выход: {symbol} [{TF_LABELS[tf]}] {dur}ч direction={direction}")
 
             # Если был сигнал BREAKOUT и теперь случился пробой — отправляем спец.алерт
             if old.get("mode") == "breakout" and direction:
                 logger.info(f"💥 Пробой подтверждён: {symbol} [{TF_LABELS[tf]}] → {direction}")
                 daily_stats["breakouts"] = daily_stats.get("breakouts", 0) + 1
+                record_breakout()
                 await send_breakout_alert(
                     symbol, tf, old, direction, bp,
                     old["range_high"], old["range_low"]
@@ -564,6 +566,7 @@ async def scan_market():
             active_flats[key] = stats
             last_alerts[key]  = now
             daily_stats["found"] += 1
+            record_signal(symbol, tf, stats["score"], stats.get("mode", "grid"))
             all_signals.append((score, symbol, tf, stats))
             logger.info(
                 f"✅ {symbol} [{TF_LABELS[tf]}] score={stats['score']}/10 "
