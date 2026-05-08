@@ -11,6 +11,7 @@ from funding import analyse_funding
 from profit import calc_profit, format_profit_block
 from sr_cache import get_cached, set_cached, clear_stale
 from bot_commands import is_paused
+from smart_analysis import full_smart_analysis
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +109,7 @@ GRID_MIN_COUNT    = 5       # Мин. сеток
 
 # ══════════════════════════════════════════════════════════════════════════════
 
-session = HTTP(testnet=False)
+session = HTTP(testnet=False, domain="bytick")
 
 # Загружаем с диска — переживает рестарты
 active_flats, last_alerts = load_state()
@@ -494,6 +495,9 @@ def analyse_flat(df: pd.DataFrame, symbol: str = "", tf: str = "") -> dict | Non
             duration_h=max(expected_duration_h, 4.0),
         )
 
+        # ── Smart Money анализ ─────────────────────────────────────────────────
+        smart = full_smart_analysis(df, flat_candles, round(bb_width * 100, 2), tf=tf)
+
         return {
             "price":        price,
             "adx":          round(adx_val, 2),
@@ -515,6 +519,7 @@ def analyse_flat(df: pd.DataFrame, symbol: str = "", tf: str = "") -> dict | Non
             "sr":           sr_ctx,
             "funding":      funding,
             "profit":       profit,
+            "smart":        smart,
             "score":        score,
             "adx_ok":       adx_ok,
             "bb_ok":        bb_ok,
@@ -667,11 +672,22 @@ async def scan_market():
 
             stats["volume24h"] = vol24h
 
+            # ── Smart Money фильтр ─────────────────────────────────────────────
+            smart          = stats.get("smart", {})
+            recommendation = smart.get("recommendation", "grid")
+            grid_allowed   = smart.get("grid_allowed", True)
+
+            if not grid_allowed and recommendation != "breakout":
+                reasons = ", ".join(smart.get("grid_blocked", []))
+                logger.info(f"🚫 Grid заблокирован: {symbol} [{TF_LABELS[tf]}] — {reasons}")
+                continue
+
             # ── Дедупликация — раз в 6 часов ──────────────────────────────────
             if now - last_alerts.get(key, 0) < 21600:
                 continue
 
             stats["since"]    = now
+            stats["mode"]     = recommendation   # "grid" / "breakout" / "wait"
             active_flats[key] = stats
             last_alerts[key]  = now
             found += 1
