@@ -14,7 +14,7 @@ import numpy as np
 from pybit.unified_trading import HTTP
 import pandas as pd
 import ta as ta_lib
-from notifier import send_signal, send_exit_alert, send_daily_report
+from notifier import send_signal, send_exit_alert, send_daily_report, send_breakout_alert
 from state import load_state, save_state
 from funding import analyse_funding
 from profit import calc_profit, format_profit_block
@@ -374,17 +374,43 @@ def analyse_flat(df: pd.DataFrame, symbol: str = "", tf: str = "") -> dict | Non
 #  ВЫХОД ИЗ БОКОВИКА
 # ──────────────────────────────────────────────────────────────────────────────
 
-def check_exit(df: pd.DataFrame, saved: dict) -> bool:
+def check_exit(df: pd.DataFrame, saved: dict) -> tuple[bool, str | None]:
+    """
+    Проверяет вышла ли цена из боковика.
+    Возвращает (exited, direction) где direction = "up" / "down" / None.
+
+    "up"   — пробой вверх  (бычий пробой, возможен лонг)
+    "down" — пробой вниз   (медвежий пробой, возможен шорт)
+    None   — ADX вырос, но нет чёткого пробоя уровня
+    """
     try:
         price = float(df["close"].iloc[-1])
         adx_s = _adx(df["high"], df["low"], df["close"], length=14)
-        if adx_s is None: return False
-        if float(adx_s.iloc[-1]) > 25:          return True
-        if price > saved["range_high"] * 1.01:  return True
-        if price < saved["range_low"]  * 0.99:  return True
-        return False
+        if adx_s is None:
+            return False, None
+
+        adx_now = float(adx_s.iloc[-1])
+        rh = saved["range_high"]
+        rl = saved["range_low"]
+
+        # Пробой вверх: цена закрылась выше верхней границы на 1%+
+        if price > rh * 1.01:
+            return True, "up"
+
+        # Пробой вниз: цена закрылась ниже нижней границы на 1%+
+        if price < rl * 0.99:
+            return True, "down"
+
+        # ADX вырос — тренд начался, но направление неясно
+        if adx_now > 25:
+            # Определяем направление по положению цены
+            mid = (rh + rl) / 2
+            direction = "up" if price > mid else "down"
+            return True, direction
+
+        return False, None
     except Exception:
-        return False
+        return False, None
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -436,10 +462,12 @@ async def scan_symbol(item: dict, now: float, semaphore: asyncio.Semaphore) -> l
 
             # Проверка выхода
             if key in active_flats:
-                if check_exit(df, active_flats[key]):
+                exited, direction = check_exit(df, active_flats[key])
+                if exited:
                     old = active_flats.pop(key)
                     dur = round((now - old.get("since", now)) / 3600, 1)
-                    exits.append((symbol, tf, old, dur))
+                    bp  = float(df["close"].iloc[-1])
+                    exits.append((symbol, tf, old, dur, direction, bp))
                 continue
 
             stats = analyse_flat(df, symbol=symbol, tf=tf)
@@ -513,12 +541,22 @@ async def scan_market():
         signals, exits = result
 
         # Обрабатываем выходы
-        for symbol, tf, old, dur in exits:
+        for symbol, tf, old, dur, direction, bp in exits:
             total_exits += 1
             daily_stats["exits"] += 1
-            key = f"{symbol}_{tf}"
-            logger.info(f"⚠️ Выход: {symbol} [{TF_LABELS[tf]}] {dur}ч")
-            await send_exit_alert(symbol, tf, old, dur)
+            logger.info(f"⚠️ Выход: {symbol} [{TF_LABELS[tf]}] {dur}ч direction={direction}")
+
+            # Если был сигнал BREAKOUT и теперь случился пробой — отправляем спец.алерт
+            if old.get("mode") == "breakout" and direction:
+                logger.info(f"💥 Пробой подтверждён: {symbol} [{TF_LABELS[tf]}] → {direction}")
+                daily_stats["breakouts"] = daily_stats.get("breakouts", 0) + 1
+                await send_breakout_alert(
+                    symbol, tf, old, direction, bp,
+                    old["range_high"], old["range_low"]
+                )
+            else:
+                # Обычный выход из боковика
+                await send_exit_alert(symbol, tf, old, dur)
 
         # Сохраняем новые сигналы
         for score, symbol, tf, stats in signals:
