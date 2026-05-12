@@ -6,6 +6,7 @@ from keep_alive import keep_alive
 from scanner import scan_market, send_daily_summary, active_flats, daily_stats
 from notifier import flush_retry_queue
 from bot_commands import poll_commands, set_refs
+from portfolio import load_portfolio
 
 logging.basicConfig(
     level=logging.INFO,
@@ -22,6 +23,7 @@ async def main():
         return
 
     set_refs(active_flats, daily_stats)
+    load_portfolio()
     keep_alive()
 
     scheduler = AsyncIOScheduler()

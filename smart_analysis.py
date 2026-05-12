@@ -585,7 +585,7 @@ def full_smart_analysis(df: pd.DataFrame, flat_candles: int,
         blocked.append(f"диапазон {range_info['width_pct']:.1f}% < 3%")
     if price_pos["position"] == "middle":
         blocked.append("цена в середине")
-    if impulse["has_impulse"] and impulse["last_impulse_ago"] <= 2:
+    if impulse["has_impulse"] and impulse["last_impulse_ago"] <= 3:
         blocked.append(f"импульс {impulse['last_impulse_ago']} св. назад")
     if fvg["danger_above"] or fvg["danger_below"]:
         parts = []

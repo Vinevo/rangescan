@@ -19,7 +19,7 @@ from state import load_state, save_state
 from funding import analyse_funding
 from profit import calc_profit, format_profit_block
 from sr_cache import get_cached, set_cached, clear_stale
-from bot_commands import is_paused, record_signal, record_exit, record_breakout
+from bot_commands import is_paused, record_signal, record_exit, record_breakout, check_portfolio_stops, notify_portfolio_exit
 from smart_analysis import full_smart_analysis
 
 logger = logging.getLogger(__name__)
@@ -557,8 +557,10 @@ async def scan_market():
                     old["range_high"], old["range_low"]
                 )
             else:
-                # Обычный выход из боковика
                 await send_exit_alert(symbol, tf, old, dur)
+
+            # Уведомляем портфель если эта монета была в работе
+            await notify_portfolio_exit(symbol, tf, dur)
 
         # Сохраняем новые сигналы
         for score, symbol, tf, stats in signals:
@@ -574,6 +576,20 @@ async def scan_market():
                 f"mode={stats.get('mode','grid')} "
                 f"APY~{stats.get('profit',{}).get('apy_pct',0):.0f}%"
             )
+
+    # Собираем текущие цены для мониторинга портфеля
+    current_prices = {}
+    for item in symbols:
+        sym = item["symbol"]
+        # Берём цену из active_flats если есть, иначе пропускаем
+        for tf in TIMEFRAMES:
+            key = f"{sym}_{tf}"
+            if key in active_flats:
+                current_prices[sym] = active_flats[key].get("price", 0)
+                break
+
+    # Проверяем стопы по портфелю
+    await check_portfolio_stops(current_prices)
 
     # Сортируем по скору и отправляем
     all_signals.sort(key=lambda x: x[0], reverse=True)

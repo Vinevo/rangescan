@@ -207,6 +207,21 @@ async def _send_grid(symbol, tf, tf_label, price, score, vol24h, funding, smart,
         stats["grid_count"], 1000.0,
         stats["range_low"], stats["range_high"], price)
 
+    # Стоп-лоссы
+    rl = stats["range_low"]
+    rh = stats["range_high"]
+    stop_low  = round(rl * 0.97, 8)
+    stop_high = round(rh * 1.05, 8)
+    max_loss  = round((price - stop_low) / price * 100, 2)
+
+    stop_block = (
+        f"\n🛡 *Защита Grid Bot*\n"
+        f"┌ Нижний стоп: `{stop_low}` (−3% от границы)\n"
+        f"├ Верхний стоп: `{stop_high}` (+5%) или выключить\n"
+        f"├ Макс. убыток при $1000: `~${round(1000 * max_loss/100, 1)}`\n"
+        f"└ ⚠️ Плечо: только *1x*!"
+    )
+
     # Прибыль
     p = profit
     profit_line = ""
@@ -222,6 +237,9 @@ async def _send_grid(symbol, tf, tf_label, price, score, vol24h, funding, smart,
 
     vol_warn = "\n⚠️ *Объём растёт* — возможен пробой!" if stats.get("vol_growing") else ""
     sr_block = f"\n📌 {sr_line}" if sr_line else ""
+
+    # Ключ для callback кнопки
+    key = f"{symbol}_{tf}"
 
     text = (
         f"🤖 *GRID · {symbol}*\n"
@@ -242,12 +260,43 @@ async def _send_grid(symbol, tf, tf_label, price, score, vol24h, funding, smart,
         f"⚙️ *Grid настройки*\n"
         f"↓ `{stats['range_low']}` ↔ `{stats['range_high']}` ↑\n"
         f"📐 `{stats['range_pct']}%` · # `{gc_label}` сеток · шаг `{stats['grid_step']}`"
+        f"{stop_block}"
         f"{profit_line}"
         f"{vol_warn}\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"🔗 [Открыть на Bybit]({link})"
     )
-    await _send(text)
+
+    # Inline кнопки под сигналом
+    markup = {
+        "inline_keyboard": [[
+            {"text": "✅ Взять в работу", "callback_data": f"add_trade:{key}"},
+            {"text": "🔗 Bybit",          "url": link},
+        ]]
+    }
+    await _send_with_markup(text, markup)
+
+
+async def _send_with_markup(text: str, markup: dict):
+    """Отправка сообщения с inline-кнопками."""
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        return False
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.post(url, json={
+                "chat_id": TELEGRAM_CHAT_ID, "text": text,
+                "parse_mode": "Markdown", "disable_web_page_preview": True,
+                "reply_markup": markup},
+                timeout=aiohttp.ClientTimeout(total=10)) as r:
+                if r.status == 200:
+                    return True
+                body = await r.text()
+                logger.warning(f"Telegram markup {r.status}: {body[:200]}")
+                return False
+    except Exception as e:
+        logger.warning(f"Telegram markup: {e}")
+        return False
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -266,6 +315,8 @@ async def _send_breakout_watch(symbol, tf, tf_label, price, score, vol24h, fundi
             sweep_hint = "\n💧 Бычий sweep → *вероятнее пробой вверх*"
         else:
             sweep_hint = "\n💧 Медвежий sweep → *вероятнее пробой вниз*"
+
+    key = f"{symbol}_{tf}"
 
     text = (
         f"⚡ *BREAKOUT · {symbol}*\n"
@@ -288,7 +339,14 @@ async def _send_breakout_watch(symbol, tf, tf_label, price, score, vol24h, fundi
         f"⚠️ Входить только после *закрытия свечи* за уровнем\n"
         f"🔗 [Открыть на Bybit]({link})"
     )
-    await _send(text)
+
+    markup = {
+        "inline_keyboard": [[
+            {"text": "👁 Следить за пробоем", "callback_data": f"add_trade:{key}"},
+            {"text": "🔗 Bybit", "url": link},
+        ]]
+    }
+    await _send_with_markup(text, markup)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -356,7 +414,78 @@ async def send_breakout_alert(symbol: str, tf: str, stats: dict,
 #  ВЫХОД ИЗ БОКОВИКА
 # ──────────────────────────────────────────────────────────────────────────────
 
-async def send_exit_alert(symbol: str, tf: str, stats: dict, duration_h: float = 0):
+async def send_portfolio_stop_alert(trade: dict, status: str, current_price: float):
+    """🚨 Персональный алерт когда цена близко к стопу или пробила его."""
+    symbol   = trade["symbol"]
+    tf       = trade["tf"]
+    tf_label = TF_LABELS.get(tf, tf)
+    link     = BYBIT_URL.format(symbol=symbol)
+    deposit  = trade.get("deposit", 0)
+    profit   = trade.get("profit_est", 0)
+    sign     = "+" if profit >= 0 else ""
+
+    if status == "stop_low":
+        header = f"🚨 *СТОП СРАБОТАЛ · {symbol}*"
+        body   = (
+            f"Цена пробила нижний стоп!\n"
+            f"Стоп: `{trade['stop_loss']}` · Цена: `{current_price}`\n"
+            f"🛑 *Немедленно закрой Grid Bot!*"
+        )
+    elif status == "stop_high":
+        header = f"🚀 *ВЕРХНИЙ СТОП · {symbol}*"
+        body   = (
+            f"Цена пробила верхний стоп!\n"
+            f"Стоп: `{trade['stop_high']}` · Цена: `{current_price}`\n"
+            f"✅ Закрой бота — зафиксируй прибыль"
+        )
+    elif status == "near_stop_low":
+        header = f"⚠️ *БЛИЗКО К СТОПУ · {symbol}*"
+        body   = (
+            f"Цена опасно близко к нижнему стопу!\n"
+            f"Стоп: `{trade['stop_loss']}` · Цена: `{current_price}`\n"
+            f"Расстояние: `{round(abs(current_price - trade['stop_loss']) / current_price * 100, 2)}%`\n"
+            f"👀 Следи за ситуацией"
+        )
+    else:
+        return
+
+    elapsed_h = round((time.time() - trade["since"]) / 3600, 1)
+
+    text = (
+        f"{header}\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"⏱ `{tf_label}` · 💲 `{current_price}`\n"
+        f"⏳ В работе: `{elapsed_h}ч` · Депозит: `${deposit}`\n"
+        f"💰 Расч. прибыль: `{sign}${profit:.2f}`\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"{body}\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"📐 Диапазон: `{trade['range_low']}` — `{trade['range_high']}`\n"
+        f"🔗 [Открыть на Bybit]({link})"
+    )
+    await _send(text)
+
+
+async def send_portfolio_exit_alert(trade: dict, duration_h: float, reason: str):
+    """⚠️ Алерт о выходе из боковика по сделке из портфеля."""
+    symbol   = trade["symbol"]
+    tf_label = TF_LABELS.get(trade["tf"], trade["tf"])
+    link     = BYBIT_URL.format(symbol=symbol)
+    profit   = trade.get("profit_est", 0)
+    sign     = "+" if profit >= 0 else ""
+
+    text = (
+        f"⚠️ *ТВОЯ СДЕЛКА · {symbol}*\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"⏱ `{tf_label}` · Депозит: `${trade.get('deposit',0)}`\n"
+        f"⏳ Держалась: `{duration_h}ч`\n"
+        f"💰 Расч. прибыль: `{sign}${profit:.2f}`\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"🛑 *{reason}*\n"
+        f"Закрой Grid Bot на Bybit!\n"
+        f"🔗 [Открыть на Bybit]({link})"
+    )
+    await _send(text)
     tf_label = TF_LABELS.get(tf, tf)
     link     = BYBIT_URL.format(symbol=symbol)
     profit   = stats.get("profit", {})
