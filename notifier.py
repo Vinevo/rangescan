@@ -10,6 +10,7 @@ notifier.py — Bybit Flat Scanner v9
 """
 
 import os
+import time
 import logging
 import aiohttp
 
@@ -413,6 +414,32 @@ async def send_breakout_alert(symbol: str, tf: str, stats: dict,
 # ──────────────────────────────────────────────────────────────────────────────
 #  ВЫХОД ИЗ БОКОВИКА
 # ──────────────────────────────────────────────────────────────────────────────
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  ВЫХОД ИЗ БОКОВИКА
+# ──────────────────────────────────────────────────────────────────────────────
+
+async def send_exit_alert(symbol: str, tf: str, stats: dict, duration_h: float = 0):
+    """⚠️ Стандартный алерт о выходе из боковика."""
+    tf_label = TF_LABELS.get(tf, tf)
+    link     = BYBIT_URL.format(symbol=symbol)
+    profit   = stats.get("profit", {})
+    earned   = profit.get("net_profit_usdt", 0)
+    sign     = "+" if earned >= 0 else ""
+    earned_s = f"`{sign}${earned:.2f}` (при $1000)" if earned else "н/д"
+
+    text = (
+        f"⚠️ *ВЫХОД ИЗ БОКОВИКА · {symbol}*\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"⏱ `{tf_label}` · 💲 `{stats['price']}`\n"
+        f"⏳ Держался: `{duration_h}ч` · Скор: `{stats.get('score',0)}/10`\n"
+        f"💰 Расч. прибыль: {earned_s}\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"🛑 *Закрой Grid Bot!*\n"
+        f"🔗 [Открыть на Bybit]({link})"
+    )
+    await _send(text)
+
 
 async def send_portfolio_stop_alert(trade: dict, status: str, current_price: float):
     """🚨 Персональный алерт когда цена близко к стопу или пробила его."""
